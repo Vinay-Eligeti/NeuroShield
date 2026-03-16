@@ -1674,6 +1674,389 @@ a:hover {
   cursor: not-allowed;
 }
 
+/* Audio Upload */
+.scanner-audio-upload {
+  margin-bottom: 0;
+}
+
+.audio-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+  padding: 32px;
+  border: 2px dashed var(--border);
+  border-radius: 14px;
+  background: var(--bg-input);
+  cursor: pointer;
+  transition: var(--transition);
+  text-align: center;
+}
+
+.audio-dropzone:hover {
+  border-color: rgba(34, 211, 238, 0.4);
+  background: rgba(34, 211, 238, 0.03);
+}
+
+.audio-dropzone.dragover {
+  border-color: #22d3ee;
+  background: rgba(34, 211, 238, 0.08);
+  box-shadow: 0 0 20px rgba(34, 211, 238, 0.15);
+}
+
+/* Audio Preview */
+.audio-preview-wrapper {
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  padding: 16px;
+}
+
+.audio-file-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.audio-file-icon {
+  font-size: 1.8rem;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(34, 211, 238, 0.1);
+  border-radius: 10px;
+}
+
+.audio-file-details {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.audio-file-name {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.audio-file-size {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.audio-remove-btn {
+  padding: 6px 12px;
+  background: rgba(239, 68, 68, 0.85);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  font-family: var(--font-primary);
+}
+
+.audio-remove-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 1);
+  transform: scale(1.05);
+}
+
+.audio-remove-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.audio-player {
+  width: 100%;
+  border-radius: 8px;
+  outline: none;
+  height: 40px;
+  filter: invert(0.85) hue-rotate(180deg);
+}
+
+/* Audio Sub-Toggle (Upload / Live Mic) */
+.audio-sub-toggle {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 14px;
+}
+
+.audio-sub-btn {
+  flex: 1;
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  font-family: var(--font-primary);
+}
+
+.audio-sub-btn.active {
+  background: rgba(34, 211, 238, 0.12);
+  color: #22d3ee;
+  box-shadow: 0 1px 6px rgba(34, 211, 238, 0.12);
+}
+
+.audio-sub-btn:hover:not(.active):not(:disabled) {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.audio-sub-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Live Mic Section */
+.live-mic-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.live-mic-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.mic-start-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 36px;
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.15), rgba(239, 68, 68, 0.08));
+  border: 2px solid rgba(239, 68, 68, 0.3);
+  border-radius: 16px;
+  color: #f87171;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
+  font-family: var(--font-primary);
+}
+
+.mic-start-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.25), rgba(239, 68, 68, 0.15));
+  border-color: rgba(239, 68, 68, 0.5);
+  transform: scale(1.02);
+  box-shadow: 0 4px 20px rgba(239, 68, 68, 0.2);
+}
+
+.mic-start-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.mic-icon {
+  font-size: 1.4rem;
+}
+
+/* Active Recording */
+.mic-active-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.mic-recording-indicator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 12px;
+}
+
+.recording-dot {
+  width: 12px;
+  height: 12px;
+  background: #ef4444;
+  border-radius: 50%;
+  animation: recordPulse 1s ease-in-out infinite;
+}
+
+@keyframes recordPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+.recording-time {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #f87171;
+  font-family: 'Courier New', monospace;
+  min-width: 50px;
+}
+
+.recording-label {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.mic-action-btns {
+  display: flex;
+  gap: 10px;
+}
+
+.mic-stop-btn {
+  padding: 10px 22px;
+  background: linear-gradient(135deg, #a855f7, #6366f1);
+  border: none;
+  border-radius: 10px;
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
+  font-family: var(--font-primary);
+}
+
+.mic-stop-btn:hover {
+  box-shadow: 0 4px 16px rgba(168, 85, 247, 0.4);
+  transform: scale(1.02);
+}
+
+.mic-cancel-btn {
+  padding: 10px 18px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  font-family: var(--font-primary);
+}
+
+.mic-cancel-btn:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #f87171;
+}
+
+/* Live Transcript Box */
+.live-transcript-box {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.live-transcript-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.live-pulse {
+  color: #ef4444;
+  animation: recordPulse 1s ease-in-out infinite;
+  font-size: 0.9rem;
+}
+
+.live-transcript-text {
+  padding: 14px;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  line-height: 1.6;
+  max-height: 150px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.live-transcript-text::-webkit-scrollbar {
+  width: 4px;
+}
+
+.live-transcript-text::-webkit-scrollbar-thumb {
+  background: rgba(168, 85, 247, 0.3);
+  border-radius: 4px;
+}
+
+/* Live Risk Bar */
+.live-risk-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  transition: var(--transition);
+}
+
+.live-risk-bar.risk-safe {
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  color: #22c55e;
+}
+
+.live-risk-bar.risk-suspicious {
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.2);
+  color: #fbbf24;
+}
+
+.live-risk-bar.risk-critical {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+.live-risk-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.live-risk-emoji {
+  font-size: 1.1rem;
+}
+
+.live-risk-score {
+  font-weight: 800;
+  font-size: 0.95rem;
+}
+
+.live-risk-status {
+  font-weight: 600;
+}
+
+.live-risk-category {
+  font-size: 0.78rem;
+  opacity: 0.8;
+}
+
 /* Scanner analyze button */
 .scanner-analyze-btn {
   background: linear-gradient(135deg, #a855f7, #6366f1) !important;

@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import Tesseract from 'tesseract.js'
 
 // ============================================
@@ -100,26 +100,42 @@ ${BASE_RULES}
 - If no text could be extracted or text is meaningless, return riskScore 5 with status "Safe" and scamCategory "Safe Image"
 `
 
+const AUDIO_SYSTEM_PROMPT = `You are a cybersecurity AI specialized in detecting scams from audio transcripts. The following text was transcribed from an audio recording. Analyze it for scam or suspicious content such as:
+- OTP requests or bank account verification calls
+- Authority impersonation (police, CBI, customs, tax officers)
+- Digital arrest threats or legal consequence threats
+- Urgent payment demands via UPI, wire transfer, or gift cards
+- Investment or crypto scheme pitches
+- Job scam offers with unrealistic salaries
+- Delivery/customs payment demands
+- Extortion, blackmail, or threat calls
+- Lottery or prize claim announcements
+
+If the transcript is very short, inaudible, or contains no suspicious content, return a LOW risk score with category "Safe Audio".
+
+Return ONLY a valid JSON object with this exact structure (no markdown, no code fences, just raw JSON):
+${JSON_STRUCTURE}
+
+${BASE_RULES}
+- For safe audio, still provide general safety tips as actions
+- matchedKeywords should contain actual words/phrases found in the transcript
+- If no speech could be detected or text is meaningless, return riskScore 5 with status "Safe" and scamCategory "Safe Audio"
+`
+
 // ============================================
 // Helpers
 // ============================================
 const GROQ_TEXT_MODEL = 'llama-3.1-8b-instant'
+const AUDIO_API_URL = 'http://localhost:5001/api/transcribe'
+const AUDIO_CHUNK_API_URL = 'http://localhost:5001/api/transcribe-chunk'
 
 const URL_REGEX = /^(https?:\/\/)?([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(\/[^\s]*)?$/
 
 function detectInputType(text) {
   if (!text || !text.trim()) return null
   const trimmed = text.trim()
-  // Check if the entire input is a single URL (no other text around it)
-  if (URL_REGEX.test(trimmed) && !trimmed.includes(' ') && !trimmed.includes('\n')) {
-    return 'url'
-  }
+  if (URL_REGEX.test(trimmed) && !trimmed.includes(' ') && !trimmed.includes('\n')) return 'url'
   return 'text'
-}
-
-function containsURL(text) {
-  // Check if text contains any URL-like patterns
-  return /(?:https?:\/\/)?(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(?:\/[^\s]*)?/g.test(text)
 }
 
 function isOnlyURL(text) {
@@ -127,12 +143,14 @@ function isOnlyURL(text) {
   return URL_REGEX.test(trimmed) && !trimmed.includes(' ') && !trimmed.includes('\n')
 }
 
-const SAFE_IMAGE_RESULT = {
+const SAFE_FALLBACK = (type) => ({
   riskScore: 5,
   status: 'Safe',
   statusCode: 'safe',
-  scamCategory: 'Safe Image',
-  shortExplanation: 'No readable text was detected in this image. The image appears safe, but always verify suspicious content manually.',
+  scamCategory: type === 'audio' ? 'Safe Audio' : 'Safe Image',
+  shortExplanation: type === 'audio'
+    ? 'No suspicious speech was detected in this audio. The recording appears safe.'
+    : 'No readable text was detected in this image. The image appears safe.',
   detectedPatterns: [],
   categoryScores: {
     authority: { label: 'Authority Impersonation', description: 'Impersonation of law enforcement or government agencies', score: 0, matchedKeywords: [], matchCount: 0, weight: 25 },
@@ -141,15 +159,15 @@ const SAFE_IMAGE_RESULT = {
     urgency: { label: 'Urgency Signals', description: 'Creating artificial time pressure', score: 0, matchedKeywords: [], matchCount: 0, weight: 15 },
     isolation: { label: 'Isolation Tactics', description: 'Attempts to prevent the victim from seeking help', score: 0, matchedKeywords: [], matchCount: 0, weight: 15 }
   },
-  explanations: [{ category: 'Image Analysis', text: 'No readable text was found in the uploaded image. If the image contains visual-only scam content (like QR codes), please describe it in text mode for analysis.', severity: 'info' }],
+  explanations: [{ category: type === 'audio' ? 'Audio Analysis' : 'Image Analysis', text: type === 'audio' ? 'No recognizable speech was detected.' : 'No readable text found.', severity: 'info' }],
   actions: [
-    { id: 1, text: 'If unsure, do not act on the image content.', icon: '🛑', priority: 'high' },
-    { id: 2, text: 'Verify the source of the image before trusting it.', icon: '🔍', priority: 'medium' },
-    { id: 3, text: 'Report suspicious images at cybercrime.gov.in', icon: '🌐', priority: 'medium' }
+    { id: 1, text: 'If unsure, do not act on the content.', icon: '🛑', priority: 'high' },
+    { id: 2, text: 'Verify the source before trusting it.', icon: '🔍', priority: 'medium' },
+    { id: 3, text: 'Report suspicious content at cybercrime.gov.in', icon: '🌐', priority: 'medium' }
   ],
   totalPatternsFound: 0,
   messageLengthAnalyzed: 0
-}
+})
 
 // ============================================
 // Component
@@ -159,54 +177,73 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [error, setError] = useState(null)
   const [quickResult, setQuickResult] = useState(null)
-  const [mode, setMode] = useState('text') // 'text', 'url', or 'image'
+  const [mode, setMode] = useState('text') // 'text', 'url', 'image', 'audio'
   const [imageFile, setImageFile] = useState(null)
   const [imagePreview, setImagePreview] = useState(null)
+  const [audioFile, setAudioFile] = useState(null)
+  const [audioPreview, setAudioPreview] = useState(null)
   const [ocrProgress, setOcrProgress] = useState('')
-  const [detectedType, setDetectedType] = useState(null) // auto-detected type indicator
+  const [audioProgress, setAudioProgress] = useState('')
+  const [detectedType, setDetectedType] = useState(null)
+  const [audioSubMode, setAudioSubMode] = useState('upload') // 'upload' or 'live'
+
+  // ---- Live mic state ----
+  const [isRecording, setIsRecording] = useState(false)
+  const [liveTranscript, setLiveTranscript] = useState('')
+  const [liveRisk, setLiveRisk] = useState(null) // { riskScore, statusCode, status, scamCategory }
+  const [recordingTime, setRecordingTime] = useState(0)
+  const mediaRecorderRef = useRef(null)
+  const streamRef = useRef(null)
+  const timerRef = useRef(null)
+  const transcriptRef = useRef('') // mutable ref for accumulated transcript
+  const analysisQueueRef = useRef(false) // prevents overlapping Groq calls
+  const chunkCountRef = useRef(0)
+
   const fileInputRef = useRef(null)
+  const audioInputRef = useRef(null)
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopRecording()
+    }
+  }, [])
 
   // ---- Auto-detect input type on text change ----
   const handleTextChange = (e) => {
     const val = e.target.value
     setMessage(val)
     setError(null)
-
-    if (mode !== 'image') {
+    if (mode !== 'image' && mode !== 'audio') {
       const detected = detectInputType(val)
       setDetectedType(detected)
-
-      // Auto-switch mode based on detection
-      if (detected === 'url' && mode !== 'url') {
-        setMode('url')
-      } else if (detected === 'text' && mode === 'url') {
-        setMode('text')
-      }
+      if (detected === 'url' && mode !== 'url') setMode('url')
+      else if (detected === 'text' && mode === 'url') setMode('text')
     }
   }
 
   // ---- Validation ----
   const validateInput = () => {
-    const trimmed = message.trim()
-
     if (mode === 'text') {
-      if (!trimmed) return 'Please enter a message to analyze.'
-      if (isOnlyURL(trimmed)) return 'This looks like a URL. Switch to URL mode or paste plain text only.'
+      if (!message.trim()) return 'Please enter a message to analyze.'
+      if (isOnlyURL(message.trim())) return 'This looks like a URL. Switch to URL mode.'
       return null
     }
-
     if (mode === 'url') {
+      const trimmed = message.trim()
       if (!trimmed) return 'Please enter a URL to analyze.'
-      if (!URL_REGEX.test(trimmed)) return 'Please enter a valid URL (e.g. https://example.com).'
-      if (trimmed.includes(' ') || trimmed.includes('\n')) return 'URL input must be a single URL with no spaces or line breaks.'
+      if (!URL_REGEX.test(trimmed)) return 'Please enter a valid URL.'
+      if (trimmed.includes(' ') || trimmed.includes('\n')) return 'URL must be a single URL.'
       return null
     }
-
     if (mode === 'image') {
       if (!imageFile) return 'Please upload an image to analyze.'
       return null
     }
-
+    if (mode === 'audio') {
+      if (audioSubMode === 'upload' && !audioFile) return 'Please upload an audio file to analyze.'
+      return null
+    }
     return null
   }
 
@@ -214,27 +251,22 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
   const handleImageSelect = (e) => {
     const file = e.target.files?.[0]
     if (!file) return
-
     const validTypes = ['image/png', 'image/jpeg', 'image/jpg']
     if (!validTypes.includes(file.type)) {
-      setError('Please select a valid image file (PNG, JPG, JPEG only)')
+      setError('Please select a valid image file (PNG, JPG, JPEG)')
       return
     }
-
     if (file.size > 10 * 1024 * 1024) {
-      setError('Image is too large. Maximum size is 10MB.')
+      setError('Image too large. Max 10MB.')
       return
     }
-
     setError(null)
     setImageFile(file)
-    setMessage('') // Clear text when image is selected
-
+    setMessage('')
     const reader = new FileReader()
     reader.onload = (ev) => setImagePreview(ev.target.result)
     reader.readAsDataURL(file)
   }
-
   const removeImage = () => {
     setImageFile(null)
     setImagePreview(null)
@@ -242,21 +274,42 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
+  // ---- Audio file handling ----
+  const handleAudioSelect = (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const validExts = ['.mp3', '.wav', '.m4a', '.ogg', '.flac', '.webm']
+    const ext = '.' + file.name.split('.').pop().toLowerCase()
+    if (!validExts.includes(ext)) {
+      setError(`Unsupported format. Supported: ${validExts.join(', ')}`)
+      return
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      setError('Audio too large. Max 25MB.')
+      return
+    }
+    setError(null)
+    setAudioFile(file)
+    setMessage('')
+    setAudioPreview(URL.createObjectURL(file))
+  }
+  const removeAudio = () => {
+    if (audioPreview) URL.revokeObjectURL(audioPreview)
+    setAudioFile(null)
+    setAudioPreview(null)
+    setAudioProgress('')
+    if (audioInputRef.current) audioInputRef.current.value = ''
+  }
+
   // ---- Mode switching ----
   const switchMode = (newMode) => {
-    if (isAnalyzing) return
+    if (isAnalyzing || isRecording) return
     setMode(newMode)
     setError(null)
     setDetectedType(null)
-
-    if (newMode === 'image') {
-      setMessage('')
-    } else {
-      setImageFile(null)
-      setImagePreview(null)
-      setOcrProgress('')
-      if (fileInputRef.current) fileInputRef.current.value = ''
-    }
+    if (newMode === 'image') { setMessage(''); removeAudio(); resetLive() }
+    else if (newMode === 'audio') { setMessage(''); removeImage() }
+    else { removeImage(); removeAudio(); resetLive() }
   }
 
   // ---- Result processing ----
@@ -268,7 +321,6 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
     } catch (parseErr) {
       throw new Error('Failed to parse AI response. Please try again.')
     }
-
     parsed.messageLengthAnalyzed = parsed.messageLengthAnalyzed || sourceLength || 0
     parsed.totalPatternsFound = parsed.totalPatternsFound ||
       (parsed.detectedPatterns?.reduce((sum, p) => sum + (p.matchedKeywords?.length || 0), 0) || 0)
@@ -280,65 +332,209 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
       scamCategory: parsed.scamCategory,
       shortExplanation: parsed.shortExplanation
     })
-
     if (onResult) onResult(parsed)
   }
 
   // ---- Groq API call ----
   const callGroqAPI = async (apiKey, systemPrompt, userContent) => {
-    const response = await fetch(
-      'https://api.groq.com/openai/v1/chat/completions',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: GROQ_TEXT_MODEL,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userContent }
-          ],
-          temperature: 0.2,
-          max_tokens: 4096,
-          response_format: { type: 'json_object' }
-        })
-      }
-    )
-
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: GROQ_TEXT_MODEL,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent }
+        ],
+        temperature: 0.2,
+        max_tokens: 4096,
+        response_format: { type: 'json_object' }
+      })
+    })
     if (!response.ok) {
       const errData = await response.json()
       throw new Error(errData.error?.message || `API Error: ${response.status}`)
     }
-
     const data = await response.json()
     const textContent = data.choices?.[0]?.message?.content
     if (!textContent) throw new Error('No response received from Groq API')
     return textContent
   }
 
-  // ---- OCR extraction ----
+  // ---- OCR ----
   const extractTextFromImage = async (imageSource) => {
     setOcrProgress('Initializing OCR engine...')
-
     const result = await Tesseract.recognize(imageSource, 'eng', {
       logger: (m) => {
-        if (m.status === 'recognizing text') {
-          setOcrProgress(`Extracting text... ${Math.round((m.progress || 0) * 100)}%`)
-        } else if (m.status === 'loading language traineddata') {
-          setOcrProgress('Loading language data...')
-        }
+        if (m.status === 'recognizing text') setOcrProgress(`Extracting text... ${Math.round((m.progress || 0) * 100)}%`)
+        else if (m.status === 'loading language traineddata') setOcrProgress('Loading language data...')
       }
     })
-
     setOcrProgress('Text extraction complete!')
     return (result.data.text || '').replace(/\s+/g, ' ').trim()
   }
 
+  // ---- Audio file transcription ----
+  const transcribeAudio = async () => {
+    setAudioProgress('Uploading audio to Whisper server...')
+    const formData = new FormData()
+    formData.append('audio', audioFile)
+    const response = await fetch(AUDIO_API_URL, { method: 'POST', body: formData })
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}))
+      throw new Error(errData.error || `Audio server error: ${response.status}`)
+    }
+    const data = await response.json()
+    setAudioProgress(`Transcribed! (${data.language || '?'}, ${data.duration || 0}s)`)
+    return (data.transcript || '').trim()
+  }
+
+  // ======================================================
+  // LIVE MICROPHONE RECORDING
+  // ======================================================
+  const resetLive = () => {
+    setLiveTranscript('')
+    setLiveRisk(null)
+    setRecordingTime(0)
+    transcriptRef.current = ''
+    chunkCountRef.current = 0
+    analysisQueueRef.current = false
+  }
+
+  const startRecording = useCallback(async () => {
+    try {
+      resetLive()
+      setError(null)
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' })
+      mediaRecorderRef.current = mediaRecorder
+
+      // ---- Handle each chunk ----
+      mediaRecorder.ondataavailable = async (event) => {
+        if (event.data.size < 500) return // skip tiny chunks
+
+        chunkCountRef.current += 1
+        const chunkNum = chunkCountRef.current
+
+        try {
+          // Send chunk to backend for transcription
+          const formData = new FormData()
+          formData.append('audio', event.data, `chunk_${chunkNum}.webm`)
+          const response = await fetch(AUDIO_CHUNK_API_URL, { method: 'POST', body: formData })
+
+          if (response.ok) {
+            const data = await response.json()
+            const chunkText = (data.transcript || '').trim()
+
+            if (chunkText && chunkText.length > 1) {
+              transcriptRef.current += ' ' + chunkText
+              setLiveTranscript(transcriptRef.current.trim())
+
+              // Run Groq analysis every 3 chunks (or ~9 seconds)
+              if (chunkCountRef.current % 3 === 0 && !analysisQueueRef.current) {
+                runLiveAnalysis()
+              }
+            }
+          }
+        } catch (err) {
+          console.error('Chunk transcription error:', err)
+        }
+      }
+
+      // Start recording with 3-second chunks
+      mediaRecorder.start(3000)
+      setIsRecording(true)
+
+      // Timer
+      timerRef.current = setInterval(() => {
+        setRecordingTime(prev => prev + 1)
+      }, 1000)
+
+    } catch (err) {
+      if (err.name === 'NotAllowedError') {
+        setError('Microphone access denied. Please allow microphone permission and try again.')
+      } else {
+        setError('Failed to access microphone: ' + err.message)
+      }
+    }
+  }, [])
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop()
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop())
+      streamRef.current = null
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    setIsRecording(false)
+  }, [])
+
+  const runLiveAnalysis = async () => {
+    const apiKey = import.meta.env.VITE_GROQ_API_KEY
+    if (!apiKey || analysisQueueRef.current) return
+
+    const currentTranscript = transcriptRef.current.trim()
+    if (currentTranscript.length < 5) return
+
+    analysisQueueRef.current = true
+    try {
+      const userMessage = `The following is a LIVE transcript from an ongoing audio recording. Analyze the current transcript for scam content:\n\n---\n${currentTranscript}\n---`
+      const result = await callGroqAPI(apiKey, AUDIO_SYSTEM_PROMPT, userMessage)
+      const cleanedText = result.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
+      const parsed = JSON.parse(cleanedText)
+      setLiveRisk({
+        riskScore: parsed.riskScore,
+        statusCode: parsed.statusCode,
+        status: parsed.status,
+        scamCategory: parsed.scamCategory,
+        shortExplanation: parsed.shortExplanation
+      })
+    } catch (err) {
+      console.error('Live analysis error:', err)
+    } finally {
+      analysisQueueRef.current = false
+    }
+  }
+
+  const finalizeLiveRecording = async () => {
+    stopRecording()
+
+    const finalTranscript = transcriptRef.current.trim()
+    if (!finalTranscript || finalTranscript.length < 3) {
+      processResult(JSON.stringify(SAFE_FALLBACK('audio')), 0)
+      return
+    }
+
+    const apiKey = import.meta.env.VITE_GROQ_API_KEY
+    if (!apiKey) {
+      setError('Groq API key not found.')
+      return
+    }
+
+    setIsAnalyzing(true)
+    setAudioProgress('Running final analysis on full transcript...')
+    try {
+      const userMessage = `The following text was transcribed from a live audio recording. Analyze the complete transcript for scam content:\n\n---\n${finalTranscript}\n---`
+      const result = await callGroqAPI(apiKey, AUDIO_SYSTEM_PROMPT, userMessage)
+      processResult(result, finalTranscript.length)
+    } catch (err) {
+      setError(err.message || 'Failed to analyze.')
+    } finally {
+      setIsAnalyzing(false)
+      setAudioProgress('')
+    }
+  }
+
   // ---- Main analyze handler ----
   const handleAnalyze = async () => {
-    // Validate
     const validationError = validateInput()
     if (validationError) {
       setError(validationError)
@@ -355,39 +551,41 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
     setError(null)
     setQuickResult(null)
     setOcrProgress('')
+    setAudioProgress('')
 
     try {
       if (mode === 'text') {
-        // Text mode — plain text scam detection
         const result = await callGroqAPI(apiKey, TEXT_SYSTEM_PROMPT, message)
         processResult(result, message.length)
-
       } else if (mode === 'url') {
-        // URL mode — phishing detection
         const urlInput = message.trim()
-        const userMessage = `Analyze this URL for phishing and scam indicators:\n\n${urlInput}`
-        const result = await callGroqAPI(apiKey, URL_SYSTEM_PROMPT, userMessage)
+        const result = await callGroqAPI(apiKey, URL_SYSTEM_PROMPT, `Analyze this URL for phishing:\n\n${urlInput}`)
         processResult(result, urlInput.length)
-
       } else if (mode === 'image') {
-        // Image mode — OCR → text → scam detection
         const extractedText = await extractTextFromImage(imagePreview)
-
         if (!extractedText || extractedText.length < 3) {
-          processResult(JSON.stringify(SAFE_IMAGE_RESULT), 0)
+          processResult(JSON.stringify(SAFE_FALLBACK('image')), 0)
           return
         }
-
-        setOcrProgress('Sending extracted text to AI for scam analysis...')
-        const userMessage = `The following text was extracted from an uploaded image using OCR. Analyze it for scam content:\n\n---\n${extractedText}\n---`
-        const result = await callGroqAPI(apiKey, IMAGE_SYSTEM_PROMPT, userMessage)
+        setOcrProgress('Sending extracted text to AI...')
+        const result = await callGroqAPI(apiKey, IMAGE_SYSTEM_PROMPT, `OCR text from image:\n\n---\n${extractedText}\n---`)
         processResult(result, extractedText.length)
+      } else if (mode === 'audio' && audioSubMode === 'upload') {
+        const transcript = await transcribeAudio()
+        if (!transcript || transcript.length < 3) {
+          processResult(JSON.stringify(SAFE_FALLBACK('audio')), 0)
+          return
+        }
+        setAudioProgress('Sending transcript to AI...')
+        const result = await callGroqAPI(apiKey, AUDIO_SYSTEM_PROMPT, `Audio transcript:\n\n---\n${transcript}\n---`)
+        processResult(result, transcript.length)
       }
     } catch (err) {
       setError(err.message || 'Failed to analyze. Please try again.')
     } finally {
       setIsAnalyzing(false)
       setOcrProgress('')
+      setAudioProgress('')
     }
   }
 
@@ -395,11 +593,10 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
     setMessage('')
     setQuickResult(null)
     setError(null)
-    setImageFile(null)
-    setImagePreview(null)
-    setOcrProgress('')
+    removeImage()
+    removeAudio()
+    resetLive()
     setDetectedType(null)
-    if (fileInputRef.current) fileInputRef.current.value = ''
     if (onReset) onReset()
   }
 
@@ -419,15 +616,21 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
     }
   }
 
-  const canAnalyze = mode === 'image' ? imageFile : message.trim()
+  const canAnalyze =
+    mode === 'image' ? imageFile :
+    mode === 'audio' ? (audioSubMode === 'upload' ? audioFile : false) :
+    message.trim()
 
   const getModeLabel = () => {
     switch (mode) {
       case 'url': return '🔗 Analyze URL'
       case 'image': return '🖼️ Analyze Image'
+      case 'audio': return '🎙️ Analyze Audio'
       default: return '🤖 Analyze Message'
     }
   }
+
+  const formatTime = (s) => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`
 
   // ============================================
   // Render
@@ -437,7 +640,7 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
       <div className="scanner-header">
         <div>
           <h3>AI-Powered Message Scanner</h3>
-          <p>Powered by Groq AI — text, URL, and image scam detection</p>
+          <p>Powered by Groq AI — text, URL, image & audio scam detection</p>
         </div>
         <div className="scanner-badge">
           <span className="pulse-dot"></span>
@@ -447,117 +650,187 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
 
       {!quickResult && !existingResult ? (
         <>
-          {/* Mode Toggle — 3 buttons */}
+          {/* Mode Toggle — 4 buttons */}
           <div className="scanner-mode-toggle">
-            <button
-              className={`mode-btn ${mode === 'text' ? 'active' : ''}`}
-              onClick={() => switchMode('text')}
-              disabled={isAnalyzing}
-            >
-              💬 Text Message
+            <button className={`mode-btn ${mode === 'text' ? 'active' : ''}`} onClick={() => switchMode('text')} disabled={isAnalyzing || isRecording}>
+              💬 Text
             </button>
-            <button
-              className={`mode-btn ${mode === 'url' ? 'active' : ''}`}
-              onClick={() => switchMode('url')}
-              disabled={isAnalyzing}
-            >
-              🔗 URL Check
+            <button className={`mode-btn ${mode === 'url' ? 'active' : ''}`} onClick={() => switchMode('url')} disabled={isAnalyzing || isRecording}>
+              🔗 URL
             </button>
-            <button
-              className={`mode-btn ${mode === 'image' ? 'active' : ''}`}
-              onClick={() => switchMode('image')}
-              disabled={isAnalyzing}
-            >
-              🖼️ Image Scan
+            <button className={`mode-btn ${mode === 'image' ? 'active' : ''}`} onClick={() => switchMode('image')} disabled={isAnalyzing || isRecording}>
+              🖼️ Image
+            </button>
+            <button className={`mode-btn ${mode === 'audio' ? 'active' : ''}`} onClick={() => switchMode('audio')} disabled={isAnalyzing || isRecording}>
+              🎙️ Audio
             </button>
           </div>
 
           {/* Auto-detection indicator */}
-          {mode !== 'image' && detectedType && detectedType !== mode && (
+          {(mode === 'text' || mode === 'url') && detectedType && detectedType !== mode && (
             <div className="scanner-auto-detect">
-              💡 Detected as <strong>{detectedType === 'url' ? 'URL' : 'text'}</strong> — auto-switched to {detectedType === 'url' ? 'URL Check' : 'Text Message'} mode
+              💡 Detected as <strong>{detectedType === 'url' ? 'URL' : 'text'}</strong> — auto-switched
             </div>
           )}
 
+          {/* ---- INPUT AREAS ---- */}
           {mode === 'image' ? (
-            /* Image Upload */
             <div className="scanner-image-upload">
               {!imagePreview ? (
-                <div
-                  className="image-dropzone"
-                  onClick={() => fileInputRef.current?.click()}
+                <div className="image-dropzone" onClick={() => fileInputRef.current?.click()}
                   onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('dragover') }}
-                  onDragLeave={(e) => { e.currentTarget.classList.remove('dragover') }}
-                  onDrop={(e) => {
-                    e.preventDefault()
-                    e.currentTarget.classList.remove('dragover')
-                    const file = e.dataTransfer.files?.[0]
-                    if (file) handleImageSelect({ target: { files: [file] } })
-                  }}
-                >
+                  onDragLeave={(e) => e.currentTarget.classList.remove('dragover')}
+                  onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove('dragover'); const f = e.dataTransfer.files?.[0]; if (f) handleImageSelect({ target: { files: [f] } }) }}>
                   <div className="dropzone-icon">📷</div>
                   <p className="dropzone-title">Upload Suspicious Image</p>
                   <p className="dropzone-subtitle">Click to browse or drag & drop</p>
-                  <p className="dropzone-hint">Supports PNG, JPG, JPEG • Max 10MB</p>
+                  <p className="dropzone-hint">PNG, JPG, JPEG • Max 10MB</p>
                 </div>
               ) : (
                 <div className="image-preview-wrapper">
-                  <img src={imagePreview} alt="Uploaded for analysis" className="image-preview" />
-                  <button className="image-remove-btn" onClick={removeImage} disabled={isAnalyzing}>
-                    ✕ Remove
-                  </button>
+                  <img src={imagePreview} alt="Uploaded" className="image-preview" />
+                  <button className="image-remove-btn" onClick={removeImage} disabled={isAnalyzing}>✕ Remove</button>
                 </div>
               )}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".png,.jpg,.jpeg"
-                onChange={handleImageSelect}
-                style={{ display: 'none' }}
-              />
+              <input ref={fileInputRef} type="file" accept=".png,.jpg,.jpeg" onChange={handleImageSelect} style={{ display: 'none' }} />
             </div>
+
+          ) : mode === 'audio' ? (
+            <div className="scanner-audio-section">
+              {/* Audio sub-mode toggle */}
+              <div className="audio-sub-toggle">
+                <button
+                  className={`audio-sub-btn ${audioSubMode === 'upload' ? 'active' : ''}`}
+                  onClick={() => { if (!isRecording) { setAudioSubMode('upload'); resetLive() } }}
+                  disabled={isRecording || isAnalyzing}
+                >
+                  📁 Upload File
+                </button>
+                <button
+                  className={`audio-sub-btn ${audioSubMode === 'live' ? 'active' : ''}`}
+                  onClick={() => { if (!isAnalyzing) { setAudioSubMode('live'); removeAudio() } }}
+                  disabled={isAnalyzing}
+                >
+                  🔴 Live Mic
+                </button>
+              </div>
+
+              {audioSubMode === 'upload' ? (
+                /* Audio File Upload */
+                <div className="scanner-audio-upload">
+                  {!audioFile ? (
+                    <div className="audio-dropzone" onClick={() => audioInputRef.current?.click()}
+                      onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('dragover') }}
+                      onDragLeave={(e) => e.currentTarget.classList.remove('dragover')}
+                      onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove('dragover'); const f = e.dataTransfer.files?.[0]; if (f) handleAudioSelect({ target: { files: [f] } }) }}>
+                      <div className="dropzone-icon">🎙️</div>
+                      <p className="dropzone-title">Upload Suspicious Audio</p>
+                      <p className="dropzone-subtitle">Click to browse or drag & drop</p>
+                      <p className="dropzone-hint">MP3, WAV, M4A, OGG • Max 25MB</p>
+                    </div>
+                  ) : (
+                    <div className="audio-preview-wrapper">
+                      <div className="audio-file-info">
+                        <span className="audio-file-icon">🎵</span>
+                        <div className="audio-file-details">
+                          <span className="audio-file-name">{audioFile.name}</span>
+                          <span className="audio-file-size">{(audioFile.size / (1024 * 1024)).toFixed(1)} MB</span>
+                        </div>
+                        <button className="audio-remove-btn" onClick={removeAudio} disabled={isAnalyzing}>✕</button>
+                      </div>
+                      {audioPreview && <audio controls src={audioPreview} className="audio-player" />}
+                    </div>
+                  )}
+                  <input ref={audioInputRef} type="file" accept=".mp3,.wav,.m4a,.ogg,.flac,.webm" onChange={handleAudioSelect} style={{ display: 'none' }} />
+                </div>
+
+              ) : (
+                /* Live Mic Recording */
+                <div className="live-mic-section">
+                  <div className="live-mic-controls">
+                    {!isRecording ? (
+                      <button className="mic-start-btn" onClick={startRecording} disabled={isAnalyzing}>
+                        <span className="mic-icon">🎙️</span>
+                        Start Recording
+                      </button>
+                    ) : (
+                      <div className="mic-active-controls">
+                        <div className="mic-recording-indicator">
+                          <span className="recording-dot"></span>
+                          <span className="recording-time">{formatTime(recordingTime)}</span>
+                          <span className="recording-label">Recording...</span>
+                        </div>
+                        <div className="mic-action-btns">
+                          <button className="mic-stop-btn" onClick={finalizeLiveRecording}>
+                            ⏹️ Stop & Analyze
+                          </button>
+                          <button className="mic-cancel-btn" onClick={() => { stopRecording(); resetLive() }}>
+                            ✕ Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Live Transcript */}
+                  {(liveTranscript || isRecording) && (
+                    <div className="live-transcript-box">
+                      <div className="live-transcript-header">
+                        <span>📝 Live Transcript</span>
+                        {isRecording && <span className="live-pulse">●</span>}
+                      </div>
+                      <div className="live-transcript-text">
+                        {liveTranscript || (isRecording ? 'Listening...' : '')}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Live Risk Indicator */}
+                  {liveRisk && (
+                    <div className={`live-risk-bar risk-${liveRisk.statusCode}`}>
+                      <div className="live-risk-left">
+                        <span className="live-risk-emoji">{getStatusEmoji(liveRisk.statusCode)}</span>
+                        <span className="live-risk-score">{liveRisk.riskScore}/100</span>
+                        <span className="live-risk-status">{liveRisk.status}</span>
+                      </div>
+                      <span className="live-risk-category">{liveRisk.scamCategory}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
           ) : (
-            /* Text / URL Input — shared textarea */
+            /* Text / URL Input */
             <textarea
-              className="message-textarea"
-              id="scanner-input"
+              className="message-textarea" id="scanner-input"
               placeholder={mode === 'url'
                 ? 'Paste a suspicious URL here...\n\nExample: https://secure-login-verify.example.xyz/account?token=abc123'
-                : 'Paste a suspicious message here for AI analysis...\n\nExample: "This is Inspector Sharma from CBI. Your Aadhaar has been used in money laundering. A warrant has been issued. Transfer ₹50,000 via UPI immediately or face digital arrest. Don\'t tell anyone."'
+                : 'Paste a suspicious message here for AI analysis...\n\nExample: "This is Inspector Sharma from CBI. Your Aadhaar has been used in money laundering. Transfer ₹50,000 via UPI immediately or face digital arrest."'
               }
-              value={message}
-              onChange={handleTextChange}
+              value={message} onChange={handleTextChange}
               maxLength={mode === 'url' ? 2048 : 10000}
-              disabled={isAnalyzing}
-              rows={mode === 'url' ? 3 : undefined}
+              disabled={isAnalyzing} rows={mode === 'url' ? 3 : undefined}
             />
           )}
 
-          <div className="input-footer">
-            <span className="char-count">
-              {mode === 'image'
-                ? imageFile
-                  ? `${imageFile.name} (${(imageFile.size / 1024).toFixed(0)} KB)`
-                  : 'No image selected'
-                : mode === 'url'
-                  ? `${message.length} / 2,048`
-                  : `${message.length} / 10,000`
-              }
-            </span>
-            <button
-              className="analyze-btn scanner-analyze-btn"
-              id="scanner-analyze-btn"
-              onClick={handleAnalyze}
-              disabled={!canAnalyze || isAnalyzing}
-            >
-              {isAnalyzing ? (
-                <>
-                  <span className="btn-spinner"></span>
-                  Analyzing with AI...
-                </>
-              ) : getModeLabel()}
-            </button>
-          </div>
+          {/* Footer — hide during live recording */}
+          {!(mode === 'audio' && audioSubMode === 'live') && (
+            <div className="input-footer">
+              <span className="char-count">
+                {mode === 'image'
+                  ? imageFile ? `${imageFile.name} (${(imageFile.size / 1024).toFixed(0)} KB)` : 'No image selected'
+                  : mode === 'audio'
+                    ? audioFile ? `${audioFile.name} (${(audioFile.size / (1024 * 1024)).toFixed(1)} MB)` : 'No audio selected'
+                    : mode === 'url' ? `${message.length} / 2,048` : `${message.length} / 10,000`
+                }
+              </span>
+              <button className="analyze-btn scanner-analyze-btn" id="scanner-analyze-btn"
+                onClick={handleAnalyze} disabled={!canAnalyze || isAnalyzing}>
+                {isAnalyzing ? (<><span className="btn-spinner"></span>Analyzing with AI...</>) : getModeLabel()}
+              </button>
+            </div>
+          )}
 
           {isAnalyzing && (
             <div className="scanner-loading">
@@ -572,18 +845,21 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
                 {mode === 'url' && (
                   <>
                     <div className="scanner-step active"><span className="step-dot"></span> Analyzing URL structure...</div>
-                    <div className="scanner-step"><span className="step-dot"></span> Checking for phishing indicators...</div>
+                    <div className="scanner-step"><span className="step-dot"></span> Checking phishing indicators...</div>
                     <div className="scanner-step"><span className="step-dot"></span> Calculating risk score...</div>
                   </>
                 )}
                 {mode === 'image' && (
                   <>
-                    <div className={`scanner-step ${ocrProgress ? 'active' : ''}`}>
-                      <span className="step-dot"></span> {ocrProgress || 'Preparing OCR engine...'}
-                    </div>
-                    <div className={`scanner-step ${ocrProgress.includes('Sending') ? 'active' : ''}`}>
-                      <span className="step-dot"></span> Analyzing extracted text for scam patterns...
-                    </div>
+                    <div className={`scanner-step ${ocrProgress ? 'active' : ''}`}><span className="step-dot"></span> {ocrProgress || 'Preparing OCR...'}</div>
+                    <div className={`scanner-step ${ocrProgress.includes('Sending') ? 'active' : ''}`}><span className="step-dot"></span> Analyzing text for scam patterns...</div>
+                    <div className="scanner-step"><span className="step-dot"></span> Calculating risk score...</div>
+                  </>
+                )}
+                {mode === 'audio' && (
+                  <>
+                    <div className={`scanner-step ${audioProgress ? 'active' : ''}`}><span className="step-dot"></span> {audioProgress || 'Preparing audio...'}</div>
+                    <div className={`scanner-step ${audioProgress.includes('Sending') ? 'active' : ''}`}><span className="step-dot"></span> Analyzing transcript...</div>
                     <div className="scanner-step"><span className="step-dot"></span> Calculating risk score...</div>
                   </>
                 )}
@@ -604,39 +880,26 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
               {quickResult?.status || existingResult?.status}
             </div>
           </div>
-
-          {(quickResult?.scamCategory) && (
+          {quickResult?.scamCategory && (
             <div className="scanner-category">
               <span className="scanner-category-label">Scam Category:</span>
               <span className="scanner-category-value">{quickResult.scamCategory}</span>
             </div>
           )}
-
-          {(quickResult?.shortExplanation) && (
-            <div className="scanner-explanation">
-              <p>{quickResult.shortExplanation}</p>
-            </div>
+          {quickResult?.shortExplanation && (
+            <div className="scanner-explanation"><p>{quickResult.shortExplanation}</p></div>
           )}
-
           <div className="scanner-actions">
-            <button className="scanner-detail-btn" onClick={() => {
-              const el = document.querySelector('.results-page')
-              if (el) el.scrollIntoView({ behavior: 'smooth' })
-            }}>
+            <button className="scanner-detail-btn" onClick={() => { const el = document.querySelector('.results-page'); if (el) el.scrollIntoView({ behavior: 'smooth' }) }}>
               📊 View Full Analysis
             </button>
-            <button className="scanner-reset-btn" onClick={handleReset}>
-              🔄 Scan Another Message
-            </button>
+            <button className="scanner-reset-btn" onClick={handleReset}>🔄 Scan Another</button>
           </div>
         </div>
       )}
 
       {error && (
-        <div className="scanner-error">
-          <span>⚠️</span>
-          <p>{error}</p>
-        </div>
+        <div className="scanner-error"><span>⚠️</span><p>{error}</p></div>
       )}
     </div>
   )
