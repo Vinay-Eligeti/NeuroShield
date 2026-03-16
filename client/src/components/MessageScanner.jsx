@@ -409,49 +409,72 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
 
-      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' })
-      mediaRecorderRef.current = mediaRecorder
-
-      // ---- Handle each chunk ----
-      mediaRecorder.ondataavailable = async (event) => {
-        if (event.data.size < 500) return // skip tiny chunks
-
-        chunkCountRef.current += 1
-        const chunkNum = chunkCountRef.current
-
-        try {
-          // Send chunk to backend for transcription
-          const formData = new FormData()
-          formData.append('audio', event.data, `chunk_${chunkNum}.webm`)
-          const response = await fetch(AUDIO_CHUNK_API_URL, { method: 'POST', body: formData })
-
-          if (response.ok) {
-            const data = await response.json()
-            const chunkText = (data.transcript || '').trim()
-
-            if (chunkText && chunkText.length > 1) {
-              transcriptRef.current += ' ' + chunkText
-              setLiveTranscript(transcriptRef.current.trim())
-
-              // Run Groq analysis every 3 chunks (or ~9 seconds)
-              if (chunkCountRef.current % 3 === 0 && !analysisQueueRef.current) {
-                runLiveAnalysis()
-              }
-            }
-          }
-        } catch (err) {
-          console.error('Chunk transcription error:', err)
-        }
-      }
-
-      // Start recording with 3-second chunks
-      mediaRecorder.start(3000)
       setIsRecording(true)
 
       // Timer
       timerRef.current = setInterval(() => {
         setRecordingTime(prev => prev + 1)
       }, 1000)
+
+      // Use stop/restart cycle so each chunk is a complete WebM file with headers
+      const recordChunk = () => {
+        if (!streamRef.current) return
+
+        const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' })
+        mediaRecorderRef.current = recorder
+        const chunks = []
+
+        recorder.ondataavailable = (event) => {
+          if (event.data.size > 0) chunks.push(event.data)
+        }
+
+        recorder.onstop = async () => {
+          if (chunks.length === 0) return
+          const blob = new Blob(chunks, { type: 'audio/webm' })
+          if (blob.size < 500) return
+
+          chunkCountRef.current += 1
+          const chunkNum = chunkCountRef.current
+
+          try {
+            const formData = new FormData()
+            formData.append('audio', blob, `chunk_${chunkNum}.webm`)
+            const response = await fetch(AUDIO_CHUNK_API_URL, { method: 'POST', body: formData })
+
+            if (response.ok) {
+              const data = await response.json()
+              const chunkText = (data.transcript || '').trim()
+
+              if (chunkText && chunkText.length > 1) {
+                transcriptRef.current += ' ' + chunkText
+                setLiveTranscript(transcriptRef.current.trim())
+
+                // Run Groq analysis every 3 chunks (~9 seconds)
+                if (chunkCountRef.current % 3 === 0 && !analysisQueueRef.current) {
+                  runLiveAnalysis()
+                }
+              }
+            }
+          } catch (err) {
+            console.error('Chunk transcription error:', err)
+          }
+
+          // Start next chunk if still recording
+          if (streamRef.current && streamRef.current.active) {
+            recordChunk()
+          }
+        }
+
+        recorder.start()
+        // Stop after 3 seconds to get a complete WebM file
+        setTimeout(() => {
+          if (recorder.state === 'recording') {
+            recorder.stop()
+          }
+        }, 3000)
+      }
+
+      recordChunk()
 
     } catch (err) {
       if (err.name === 'NotAllowedError') {
