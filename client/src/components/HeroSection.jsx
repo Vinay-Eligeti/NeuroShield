@@ -17,5 +17,25 @@ export default function HeroSection() {
           analyzes suspicious messages in seconds and protects you from financial fraud.
         </p>
 
-            {/* analysis input section removed as requested */}
+        <div className="stats-row">
           <div className="stat-card">
+            <div className="stat-value">₹1,776 Cr</div>
+            <div className="stat-label">Lost to cyber fraud (2024)</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-value">14,000+</div>
+            <div className="stat-label">Digital arrest cases reported</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-value">30 sec</div>
+            <div className="stat-label">Average analysis time</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-value">5</div>
+            <div className="stat-label">Threat categories detected</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+}
