@@ -3,7 +3,7 @@ export default function Footer() {
     <footer className="footer" id="footer">
       <div className="container">
         <div className="footer-inner">
-          <div className="footer-logo">🛡️ NeuroShield</div>
+          <div className="footer-logo">NeuroShield</div>
           <div className="footer-links">
             <a href="https://cybercrime.gov.in" target="_blank" rel="noopener noreferrer">
               Cybercrime Portal

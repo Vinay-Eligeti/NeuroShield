@@ -9,7 +9,7 @@ export default function HowItWorks() {
 
         <div className="steps-grid">
           <div className="step-card">
-            <div className="step-icon">📋</div>
+
             <div className="step-number">1</div>
             <h4>Paste the Message</h4>
             <p>
@@ -19,7 +19,7 @@ export default function HowItWorks() {
           </div>
 
           <div className="step-card">
-            <div className="step-icon">🔬</div>
+
             <div className="step-number">2</div>
             <h4>AI-Powered Analysis</h4>
             <p>
@@ -29,7 +29,7 @@ export default function HowItWorks() {
           </div>
 
           <div className="step-card">
-            <div className="step-icon">🛡️</div>
+
             <div className="step-number">3</div>
             <h4>Get Protected</h4>
             <p>

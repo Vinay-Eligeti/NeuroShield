@@ -75,13 +75,7 @@ function App() {
 
         {!result ? (
           <>
-            <HeroSection
-              message={message}
-              setMessage={setMessage}
-              onAnalyze={handleAnalyze}
-              isAnalyzing={isAnalyzing}
-              error={error}
-            />
+            <HeroSection />
 
             {/* AI-Powered Scanner Section */}
             <section className="scanner-section" id="ai-scanner">

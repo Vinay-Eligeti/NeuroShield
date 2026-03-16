@@ -40,7 +40,8 @@ const BASE_RULES = `Rules:
 - riskScore 0-40 = safe, 40-70 = suspicious, 70-100 = critical
 - Always provide at least 3 actions for any risk level
 - Each category score should be 0 if no patterns match that category
-- Be thorough in keyword detection — list actual words from the content`
+- Be thorough in keyword detection — list actual words from the content
+- For the "icon" field in actions, use REAL Unicode emojis (e.g. ⚠️, 📞, 🔒, 🛡️, 🚨, 💳, 🔍), NOT shortcodes like :warning: or :lock:`
 
 // ============================================
 // System prompts per mode
@@ -434,7 +435,6 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
   return (
     <div className="message-scanner" id="scanner">
       <div className="scanner-header">
-        <div className="scanner-icon">🤖</div>
         <div>
           <h3>AI-Powered Message Scanner</h3>
           <p>Powered by Groq AI — text, URL, and image scam detection</p>

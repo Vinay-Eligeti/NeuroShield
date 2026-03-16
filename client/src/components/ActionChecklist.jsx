@@ -21,7 +21,6 @@ export default function ActionChecklist({ actions, riskScore }) {
   return (
     <div className="section">
       <div className="section-header">
-        <div className="section-icon">✅</div>
         <div>
           <h3>Immediate Safety Actions</h3>
           <p>
@@ -75,7 +74,6 @@ export default function ActionChecklist({ actions, riskScore }) {
             <div className="action-checkbox">
               {checkedItems.has(action.id) ? '✓' : ''}
             </div>
-            <span className="action-icon">{action.icon}</span>
             <span className="action-text">{action.text}</span>
             <span className={`action-priority ${action.priority}`}>
               {action.priority}
