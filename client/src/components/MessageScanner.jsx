@@ -383,7 +383,7 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
       // Step 1: Transcribe
       const formData = new FormData()
       formData.append('audio', file)
-      const response = await fetch(AUDIO_API_URL, { method: 'POST', body: formData })
+      const response = await fetch(${import.meta.env.VITE_AUDIO_API_URL}, { method: 'POST', body: formData })
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}))
