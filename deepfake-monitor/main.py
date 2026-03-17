@@ -30,7 +30,7 @@ logger = logging.getLogger("neuroshield.monitor")
 # ---------------------------------------------------------------------------
 _face_detector = None
 _voice_detector = None
-_asr_model = None
+_asr_models = {"en": None, "hi": None}
 
 
 
@@ -52,17 +52,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("❌ Voice detector failed to load: %s", e)
 
-        # Optional ASR (offline) — requires Vosk model on disk
-    try:
-        from vosk import Model
-        model_dir = os.path.join(os.path.dirname(__file__), "models", "vosk-model-small-en-us-0.15")
-        if os.path.isdir(model_dir):
-            _asr_model = Model(model_dir)
-            logger.info("✅ ASR model ready")
-        else:
-            logger.warning("⚠️  ASR model not found at %s", model_dir)
-    except Exception as e:
-        logger.error("❌ ASR model failed to load: %s", e)
+    # Multi-lang ASR (Vosk)
+    from vosk import Model
+    for lang, model_name in [("en", "vosk-model-small-en-us-0.15"), ("hi", "vosk-model-small-hi-0.22")]:
+        try:
+            m_path = os.path.join(os.path.dirname(__file__), "models", model_name)
+            if os.path.isdir(m_path):
+                _asr_models[lang] = Model(m_path)
+                logger.info("✅ ASR [%s] ready", lang)
+            else:
+                logger.warning("⚠️  ASR [%s] not found at %s", lang, m_path)
+        except Exception as e:
+            logger.error("❌ ASR [%s] failed: %s", lang, e)
     yield
     logger.info("NeuroShield Monitor shutting down.")
 
@@ -91,10 +92,19 @@ async def health():
     return {
         "status": "ok",
         "service": "NeuroShield Deepfake Monitor",
-        "face_detector": _face_detector is not None,
-        "voice_detector": _voice_detector is not None,
-        "asr_model": _asr_model is not None,
-
+        "detectors": {
+            "face": {
+                "loaded": _face_detector is not None,
+                "method": _face_detector.model is not None if _face_detector else False,
+                "info": "MesoNet4 (CNN)" if _face_detector and _face_detector.model else "Heuristic"
+            },
+            "voice": {
+                "loaded": _voice_detector is not None,
+                "method": _voice_detector.session is not None if _voice_detector else False,
+                "info": "ONNX (CNN)" if _voice_detector and _voice_detector.session else "Heuristic"
+            },
+            "asr": _asr_model is not None,
+        }
     }
 
 
@@ -105,25 +115,39 @@ async def health():
 async def video_ws(ws: WebSocket):
     await ws.accept()
     client = ws.client
-    logger.info("Video WS connected: %s", client)
+    logger.info("Video WS connected (Binary Mode): %s", client)
     frame_count = 0
 
     try:
         while True:
-            raw = await ws.receive_text()
-            payload = json.loads(raw)
+            msg = await ws.receive()
+            
+            if msg.get("type") == "websocket.disconnect":
+                break
 
-            if payload.get("type") != "frame":
+            if "bytes" in msg:
+                img_bytes = msg["bytes"]
+                frame_id = frame_count + 1
+            elif "text" in msg:
+                try:
+                    payload = json.loads(msg["text"])
+                    if payload.get("type") == "frame":
+                        img_bytes = base64.b64decode(payload["data"])
+                        frame_id = payload.get("frameId", frame_count + 1)
+                    else:
+                        continue
+                except Exception:
+                    continue
+            else:
                 continue
 
             frame_count += 1
             t0 = time.perf_counter()
 
-            # Decode base64 JPEG → numpy BGR
-            img_bytes = base64.b64decode(payload["data"])
+            # Decode bytes (raw JPEG) → numpy BGR
             frame_bgr = _decode_jpeg(img_bytes)
 
-            # Run detector in thread pool so we don't block the event loop
+            # Run detector in thread pool
             if _face_detector and frame_bgr is not None:
                 result = await asyncio.get_event_loop().run_in_executor(
                     None, _face_detector.analyze_frame, frame_bgr
@@ -135,8 +159,7 @@ async def video_ws(ws: WebSocket):
 
             await ws.send_text(json.dumps({
                 "type": "face_result",
-                "frameId": payload.get("frameId", frame_count),
-                "timestamp": payload.get("timestamp", time.time() * 1000),
+                "frameId": frame_id,
                 "latency_ms": elapsed,
                 **result,
             }))
@@ -158,22 +181,36 @@ async def video_ws(ws: WebSocket):
 async def audio_ws(ws: WebSocket):
     await ws.accept()
     client = ws.client
-    logger.info("Audio WS connected: %s", client)
+    logger.info("Audio WS connected (Binary Mode): %s", client)
     chunk_count = 0
 
     try:
         while True:
-            raw = await ws.receive_text()
-            payload = json.loads(raw)
+            msg = await ws.receive()
+            
+            if msg.get("type") == "websocket.disconnect":
+                break
 
-            if payload.get("type") != "audio":
+            if "bytes" in msg:
+                pcm_bytes = msg["bytes"]
+                chunk_id = chunk_count + 1
+                sample_rate = 44100  # Default for binary stream
+            elif "text" in msg:
+                try:
+                    payload = json.loads(msg["text"])
+                    if payload.get("type") == "audio":
+                        pcm_bytes = base64.b64decode(payload["data"])
+                        chunk_id = payload.get("chunkId", chunk_count + 1)
+                        sample_rate = payload.get("sampleRate", 44100)
+                    else:
+                        continue
+                except Exception:
+                    continue
+            else:
                 continue
 
             chunk_count += 1
             t0 = time.perf_counter()
-
-            pcm_bytes = base64.b64decode(payload["data"])
-            sample_rate = payload.get("sampleRate", 44100)
 
             if _voice_detector:
                 result = await asyncio.get_event_loop().run_in_executor(
@@ -186,8 +223,7 @@ async def audio_ws(ws: WebSocket):
 
             await ws.send_text(json.dumps({
                 "type": "voice_result",
-                "chunkId": payload.get("chunkId", chunk_count),
-                "timestamp": payload.get("timestamp", time.time() * 1000),
+                "chunkId": chunk_id,
                 "latency_ms": elapsed,
                 **result,
             }))
@@ -202,7 +238,7 @@ async def audio_ws(ws: WebSocket):
             pass
 
 @app.websocket("/ws/asr")
-async def asr_ws(ws: WebSocket):
+async def asr_ws(ws: WebSocket, lang: str = "en"):
     await ws.accept()
     client = ws.client
     logger.info("ASR WS connected: %s", client)
@@ -218,8 +254,9 @@ async def asr_ws(ws: WebSocket):
 
     try:
         from vosk import KaldiRecognizer
-        recognizer = KaldiRecognizer(_asr_model, 16000)
+        recognizer = KaldiRecognizer(model, 16000)
         recognizer.SetWords(False)
+        chunk_count = 0
 
         while True:
             raw = await ws.receive_text()

@@ -49,7 +49,12 @@ export default function DeepfakeMonitor() {
     useEffect(() => {
         fetch('http://localhost:8000/health')
             .then(r => r.json())
-            .then(() => setBackendOk(true))
+            .then(data => {
+                setBackendOk(true)
+                setLogs(prev => [...prev, { time: 'System', type: 'info', label: 'init', method: 'Backend Connected', score: 0 }])
+                // Store detector info if available
+                if (data.detectors) setBackendOk(data.detectors)
+            })
             .catch(() => setBackendOk(false))
     }, [])
 
@@ -97,28 +102,43 @@ export default function DeepfakeMonitor() {
 
         // Video WebSocket
         const vws = new WebSocket(`${WS_BASE}/ws/video`)
-        videoWsRef.current = vws
+        vws.binaryType = 'arraybuffer'
+        vws.onopen = () => {
+            pushLog('info', { label: 'Video Feed Active', method: 'WebSocket Open', score: 0 })
+        }
         vws.onmessage = (e) => {
             try {
                 const data = JSON.parse(e.data)
                 if (data.type === 'face_result') handleResult('face', data)
             } catch { }
         }
-        vws.onerror = () => console.warn('Video WS error')
+        vws.onerror = () => {
+             console.warn('Video WS error');
+             pushLog('error', { label: 'Video Connection Failed', method: 'WS Error', score: 100 })
+        }
 
         // Audio WebSocket
         const aws = new WebSocket(`${WS_BASE}/ws/audio`)
+        aws.binaryType = 'arraybuffer'
         audioWsRef.current = aws
+        aws.onopen = () => {
+            pushLog('info', { label: 'Audio Stream Active', method: 'WebSocket Open', score: 0 })
+        }
         aws.onmessage = (e) => {
             try {
                 const data = JSON.parse(e.data)
                 if (data.type === 'voice_result') handleResult('voice', data)
             } catch { }
         }
+        aws.onerror = () => {
+            console.warn('Audio WS error');
+            pushLog('error', { label: 'Audio Connection Failed', method: 'WS Error', score: 100 })
+        }
 
-        await new Promise(r => setTimeout(r, 500))  // let WS handshakes complete
+        await new Promise(r => setTimeout(r, 300))  // shorter delay
+        setStatus('live') // Set status EARLY so video becomes visible
 
-        // Send frames
+        // Send frames as binary JPEG blobs
         frameTimerRef.current = setInterval(() => {
             if (vws.readyState !== WebSocket.OPEN) return
             const canvas = canvasRef.current
@@ -128,51 +148,44 @@ export default function DeepfakeMonitor() {
             canvas.height = 240
             canvas.getContext('2d').drawImage(video, 0, 0, 320, 240)
             canvas.toBlob(blob => {
-                if (!blob) return
-                const reader = new FileReader()
-                reader.onload = () => {
-                    const b64 = reader.result.split(',')[1]
-                    vws.send(JSON.stringify({
-                        type: 'frame',
-                        data: b64,
-                        frameId: ++frameIdRef.current,
-                        timestamp: Date.now(),
-                    }))
-                }
-                reader.readAsDataURL(blob)
-            }, 'image/jpeg', 0.7)
+                if (!blob || vws.readyState !== WebSocket.OPEN) return
+                vws.send(blob)  // Raw binary JPEG
+            }, 'image/jpeg', 0.65)
         }, FRAME_INTERVAL_MS)
 
-        // Send audio chunks
+        // Send audio chunks via AudioWorklet (Modern + non-blocking)
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 })
         audioCtxRef.current = audioCtx
-        const source = audioCtx.createMediaStreamSource(streamRef.current)
-        const processor = audioCtx.createScriptProcessor(4096, 1, 1)
-        let pcmBuffer = []
-
-        processor.onaudioprocess = (e) => {
-            const f32 = e.inputBuffer.getChannelData(0)
-            const i16 = new Int16Array(f32.length)
-            for (let i = 0; i < f32.length; i++) {
-                i16[i] = Math.max(-32768, Math.min(32767, f32[i] * 32768))
+        
+        try {
+            await audioCtx.audioWorklet.addModule('/audioProcessor.js')
+            const source = audioCtx.createMediaStreamSource(streamRef.current)
+            const workletNode = new AudioWorkletNode(audioCtx, 'neuroshield-audio-processor')
+            
+            let pcmBuffer = []
+            workletNode.port.onmessage = (e) => {
+                pcmBuffer.push(e.data)
             }
-            pcmBuffer.push(...i16)
-        }
-        source.connect(processor)
-        processor.connect(audioCtx.destination)
+            
+            source.connect(workletNode)
+            workletNode.connect(audioCtx.destination)
 
-        audioTimerRef.current = setInterval(() => {
-            if (aws.readyState !== WebSocket.OPEN || pcmBuffer.length === 0) return
-            const chunk = new Int16Array(pcmBuffer.splice(0, pcmBuffer.length))
-            const b64 = btoa(String.fromCharCode(...new Uint8Array(chunk.buffer)))
-            aws.send(JSON.stringify({
-                type: 'audio',
-                data: b64,
-                sampleRate: 44100,
-                chunkId: ++chunkIdRef.current,
-                timestamp: Date.now(),
-            }))
-        }, AUDIO_INTERVAL_MS)
+            audioTimerRef.current = setInterval(() => {
+                if (aws.readyState !== WebSocket.OPEN || pcmBuffer.length === 0) return
+                // Concatenate all current buffers into one
+                const totalLen = pcmBuffer.reduce((acc, b) => acc + b.byteLength, 0)
+                const combined = new Uint8Array(totalLen)
+                let offset = 0
+                while (pcmBuffer.length > 0) {
+                    const b = new Uint8Array(pcmBuffer.shift())
+                    combined.set(b, offset)
+                    offset += b.byteLength
+                }
+                aws.send(combined) // Raw binary PCM
+            }, AUDIO_INTERVAL_MS)
+        } catch (workletErr) {
+            console.error('AudioWorklet failed, audio monitor disabled:', workletErr)
+        }
 
         setStatus('live')
     }, [handleResult])
@@ -282,7 +295,7 @@ export default function DeepfakeMonitor() {
                                 playsInline
                                 style={{
                                     width: '100%', height: '100%', objectFit: 'cover',
-                                    display: status === 'live' ? 'block' : 'none',
+                                    display: (status === 'live' || status === 'connecting') ? 'block' : 'none',
                                 }}
                             />
                             {/* Idle / demo placeholder */}
@@ -355,6 +368,7 @@ export default function DeepfakeMonitor() {
                         logs={logs}
                         faceScore={faceScore}
                         voiceScore={voiceScore}
+                        status={typeof backendOk === 'object' ? backendOk : null}
                     />
                 </div>
 

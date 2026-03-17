@@ -32,16 +32,42 @@ MODELS = [
         "fallback_url": None,   # will use heuristic mode if unavailable
     },
     # Voice model — ONNX export of a small mel-spectrogram CNN
-    # If the URL is unavailable, voice detector falls back to acoustic heuristics.
     {
         "name": "Voice Deepfake CNN (spectrogram)",
         "filename": "voice_detector.onnx",
         "license": "Apache-2.0",
+        "url": "https://huggingface.co/spaces/Detomo/ai-deepfake-detection/resolve/main/voice_detector.onnx",
+        "license": "Apache-2.0",
         "source": "ASVspoof2021 community baseline",
-        "url": None,   # Placeholder: replace with your ONNX export URL
-        "fallback_url": None,
+    },
+    # ASR Models (Vosk)
+    {
+        "name": "Vosk English Small",
+        "filename": "vosk-model-small-en-us-0.15.zip",
+        "is_zip": True,
+        "extract_to": "vosk-model-small-en-us-0.15",
+        "url": "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+        "license": "Apache-2.0",
+        "source": "https://alphacephei.com/vosk/models",
+    },
+    {
+        "name": "Vosk Hindi Small",
+        "filename": "vosk-model-small-hi-0.22.zip",
+        "is_zip": True,
+        "extract_to": "vosk-model-small-hi-0.22",
+        "url": "https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip",
+        "license": "Apache-2.0",
+        "source": "https://alphacephei.com/vosk/models",
     },
 ]
+
+def extract_zip(zip_path, extract_path):
+    import zipfile
+    print(f"  Extracting to {extract_path}…")
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(MODELS_DIR)
+    # Most Vosk zips contain a folder; we might need to move it if names don't match
+    # But usually the folder inside the zip has the same name as the zip (minus .zip)
 
 
 def download(url: str, dest: str, name: str) -> bool:
@@ -52,6 +78,9 @@ def download(url: str, dest: str, name: str) -> bool:
                 percent = min(100, int(count * block_size * 100 / total_size))
                 print(f"\r  Progress: {percent}%", end="", flush=True)
 
+        opener = urllib.request.build_opener()
+        opener.addheaders = [('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')]
+        urllib.request.install_opener(opener)
         urllib.request.urlretrieve(url, dest, reporthook)
         print(f"\r  ✅ Saved to {dest}          ")
         return True
@@ -73,14 +102,16 @@ def main():
             continue
 
         print(f"\n📦 {model['name']}")
-        print(f"   License : {model['license']}")
-        print(f"   Source  : {model['source']}")
+        print(f"   License : {model.get('license', 'Open Source')}")
+        print(f"   Source  : {model.get('source', 'Unknown')}")
 
         success = False
-        for url in [model["url"], model.get("fallback_url")]:
+        for url in [model.get("url"), model.get("fallback_url")]:
             if url:
                 success = download(url, dest, model["name"])
                 if success:
+                    if model.get("is_zip"):
+                        extract_zip(dest, os.path.join(MODELS_DIR, model["extract_to"]))
                     break
 
         if not success:

@@ -12,10 +12,9 @@ const PATTERN_CATEGORIES = {
       'cbi', 'enforcement directorate', 'ed ', 'police', 'dcp', 'inspector',
       'commissioner', 'ips officer', 'supreme court', 'high court', 'narcotics',
       'customs', 'income tax', 'rbi', 'reserve bank', 'government officer',
-      'cyber cell', 'crime branch', 'ncb', 'interpol', 'ministry',
+      'cyber cell', 'crime branch', 'ncb', 'interpol', 'ministry', 'thana',
       'investigation officer', 'senior officer', 'law enforcement',
-      'department', 'authority', 'official', 'federal', 'central bureau',
-      'directorate', 'judiciary', 'magistrate', 'prosecution'
+      'pulis', 'adhikari', 'mantralaya', 'vibhaga', 'vachak'
     ]
   },
   arrest: {
@@ -29,8 +28,8 @@ const PATTERN_CATEGORIES = {
       'court order', 'penalty', 'section 420', 'ipc', 'crpc',
       'money laundering', 'pmla', 'hawala', 'suspicious transaction',
       'narcotics found', 'parcel seized', 'contraband', 'illegal',
-      'crime', 'offence', 'accused', 'suspect', 'investigation',
-      'case registered', 'complaint filed'
+      'giraftar', 'hiraasat', 'kaidi', 'nyayalaya', 'shikayat', 'dhara 144',
+      'case registered', 'complaint filed', 'drugs mil gaye', 'parcel pakda gaya'
     ]
   },
   payment: {
@@ -42,8 +41,8 @@ const PATTERN_CATEGORIES = {
       'google pay', 'phonepe', 'paytm', 'neft', 'rtgs', 'imps',
       'send money', 'account number', 'ifsc', 'refundable',
       'security deposit', 'fine', 'settlement amount', 'clearance fee',
-      'verification charge', 'processing fee', 'transaction',
-      'amount', 'lakh', 'crore', 'rupees', 'rs.', '₹',
+      'paisa', 'rupaye', 'transfer karein', 'khata number', 'surakshit',
+      'bhej do', 'jama karein', 'fine bhariye', 'pesua',
       'wire transfer', 'crypto', 'bitcoin'
     ]
   },
@@ -54,10 +53,8 @@ const PATTERN_CATEGORIES = {
     keywords: [
       'immediately', 'urgent', 'act now', 'right now', 'hurry',
       'within 24 hours', 'within 1 hour', 'time is running out',
-      'last chance', 'deadline', 'expire', 'without delay',
-      'as soon as possible', 'asap', 'now or never', 'don\'t delay',
-      'quick', 'fast', 'before it\'s too late', 'running out of time',
-      'final notice', 'last warning', 'emergency', 'critical',
+      'turant', 'jaldi', 'abhi', 'der mat karo', 'samay nahi hai',
+      'akhiri mauka', 'warning', 'emergency', 'jaldi se',
       'time-sensitive', 'countdown'
     ]
   },

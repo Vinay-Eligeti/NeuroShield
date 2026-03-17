@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "NeuroShield Monitor (Browser)",
+  "version": "0.2.0",
+  "description": "Capture tab audio/video for deepfake detection and run scam-language analysis.",
+  "permissions": [
+    "tabCapture",
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://localhost:8000/*",
+    "ws://localhost:8000/*",
+    "http://localhost:5000/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "NeuroShield Monitor",
+    "default_popup": "popup.html"
+  }
+}
