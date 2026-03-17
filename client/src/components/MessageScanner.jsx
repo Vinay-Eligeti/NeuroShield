@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import Tesseract from 'tesseract.js'
 
 // ============================================
@@ -40,8 +40,7 @@ const BASE_RULES = `Rules:
 - riskScore 0-40 = safe, 40-70 = suspicious, 70-100 = critical
 - Always provide at least 3 actions for any risk level
 - Each category score should be 0 if no patterns match that category
-- Be thorough in keyword detection — list actual words from the content
-- For the "icon" field in actions, use REAL Unicode emojis (e.g. ⚠️, 📞, 🔒, 🛡️, 🚨, 💳, 🔍), NOT shortcodes like :warning: or :lock:`
+- Be thorough in keyword detection — list actual words from the content`
 
 // ============================================
 // System prompts per mode
@@ -127,7 +126,6 @@ ${BASE_RULES}
 // ============================================
 const GROQ_TEXT_MODEL = 'llama-3.1-8b-instant'
 const AUDIO_API_URL = 'http://localhost:5001/api/transcribe'
-const AUDIO_CHUNK_API_URL = 'http://localhost:5001/api/transcribe-chunk'
 
 const URL_REGEX = /^(https?:\/\/)?([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(\/[^\s]*)?$/
 
@@ -185,19 +183,14 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
   const [ocrProgress, setOcrProgress] = useState('')
   const [audioProgress, setAudioProgress] = useState('')
   const [detectedType, setDetectedType] = useState(null)
-  const [audioSubMode, setAudioSubMode] = useState('upload') // 'upload' or 'live'
 
-  // ---- Live mic state ----
+  // ---- Recording state ----
   const [isRecording, setIsRecording] = useState(false)
-  const [liveTranscript, setLiveTranscript] = useState('')
-  const [liveRisk, setLiveRisk] = useState(null) // { riskScore, statusCode, status, scamCategory }
   const [recordingTime, setRecordingTime] = useState(0)
   const mediaRecorderRef = useRef(null)
   const streamRef = useRef(null)
+  const chunksRef = useRef([])
   const timerRef = useRef(null)
-  const transcriptRef = useRef('') // mutable ref for accumulated transcript
-  const analysisQueueRef = useRef(false) // prevents overlapping Groq calls
-  const chunkCountRef = useRef(0)
 
   const fileInputRef = useRef(null)
   const audioInputRef = useRef(null)
@@ -205,11 +198,14 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      stopRecording()
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop())
+      }
+      if (timerRef.current) clearInterval(timerRef.current)
     }
   }, [])
 
-  // ---- Auto-detect input type on text change ----
+  // ---- Auto-detect input type ----
   const handleTextChange = (e) => {
     const val = e.target.value
     setMessage(val)
@@ -241,7 +237,7 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
       return null
     }
     if (mode === 'audio') {
-      if (audioSubMode === 'upload' && !audioFile) return 'Please upload an audio file to analyze.'
+      if (!audioFile) return 'Please upload or record an audio file.'
       return null
     }
     return null
@@ -267,6 +263,7 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
     reader.onload = (ev) => setImagePreview(ev.target.result)
     reader.readAsDataURL(file)
   }
+
   const removeImage = () => {
     setImageFile(null)
     setImagePreview(null)
@@ -293,6 +290,7 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
     setMessage('')
     setAudioPreview(URL.createObjectURL(file))
   }
+
   const removeAudio = () => {
     if (audioPreview) URL.revokeObjectURL(audioPreview)
     setAudioFile(null)
@@ -301,15 +299,128 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
     if (audioInputRef.current) audioInputRef.current.value = ''
   }
 
+  // ======================================================
+  // MICROPHONE RECORDING (simple Start/Stop)
+  // ======================================================
+  const startRecording = async () => {
+    try {
+      setError(null)
+      removeAudio()
+      setRecordingTime(0)
+      chunksRef.current = []
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' })
+      mediaRecorderRef.current = recorder
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data)
+      }
+
+      recorder.onstop = () => {
+        // Build the complete audio blob
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+        const file = new File([blob], 'recording.webm', { type: 'audio/webm' })
+
+        // Set as the audio file (same as if user uploaded it)
+        setAudioFile(file)
+        setAudioPreview(URL.createObjectURL(blob))
+
+        // Stop mic access
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach(t => t.stop())
+          streamRef.current = null
+        }
+
+        // Auto-analyze immediately after recording stops
+        autoAnalyzeRecording(file)
+      }
+
+      recorder.start()
+      setIsRecording(true)
+
+      // Timer
+      timerRef.current = setInterval(() => {
+        setRecordingTime(prev => prev + 1)
+      }, 1000)
+
+    } catch (err) {
+      if (err.name === 'NotAllowedError') {
+        setError('Microphone access denied. Please allow microphone permission.')
+      } else {
+        setError('Failed to access microphone: ' + err.message)
+      }
+    }
+  }
+
+  const stopRecording = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop()
+    }
+    setIsRecording(false)
+  }
+
+  // ---- Auto analyze after recording ----
+  const autoAnalyzeRecording = async (file) => {
+    const apiKey = import.meta.env.VITE_GROQ_API_KEY
+    if (!apiKey) {
+      setError('Groq API key not found. Please set VITE_GROQ_API_KEY in your .env file.')
+      return
+    }
+
+    setIsAnalyzing(true)
+    setError(null)
+    setQuickResult(null)
+    setAudioProgress('Uploading recording to Whisper server...')
+
+    try {
+      // Step 1: Transcribe
+      const formData = new FormData()
+      formData.append('audio', file)
+      const response = await fetch(AUDIO_API_URL, { method: 'POST', body: formData })
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}))
+        throw new Error(errData.error || `Audio server error: ${response.status}`)
+      }
+
+      const data = await response.json()
+      const transcript = (data.transcript || '').trim()
+
+      if (!transcript || transcript.length < 3) {
+        processResult(JSON.stringify(SAFE_FALLBACK('audio')), 0)
+        return
+      }
+
+      // Step 2: Analyze with Groq
+      setAudioProgress(`Transcribed (${data.language || '?'}, ${data.duration || 0}s). Analyzing for scams...`)
+      const userMessage = `Audio transcript:\n\n---\n${transcript}\n---`
+      const result = await callGroqAPI(apiKey, AUDIO_SYSTEM_PROMPT, userMessage)
+      processResult(result, transcript.length)
+
+    } catch (err) {
+      setError(err.message || 'Failed to analyze recording.')
+    } finally {
+      setIsAnalyzing(false)
+      setAudioProgress('')
+    }
+  }
+
   // ---- Mode switching ----
   const switchMode = (newMode) => {
     if (isAnalyzing || isRecording) return
     setMode(newMode)
     setError(null)
     setDetectedType(null)
-    if (newMode === 'image') { setMessage(''); removeAudio(); resetLive() }
+    if (newMode === 'image') { setMessage(''); removeAudio() }
     else if (newMode === 'audio') { setMessage(''); removeImage() }
-    else { removeImage(); removeAudio(); resetLive() }
+    else { removeImage(); removeAudio() }
   }
 
   // ---- Result processing ----
@@ -374,189 +485,7 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
     return (result.data.text || '').replace(/\s+/g, ' ').trim()
   }
 
-  // ---- Audio file transcription ----
-  const transcribeAudio = async () => {
-    setAudioProgress('Uploading audio to Whisper server...')
-    const formData = new FormData()
-    formData.append('audio', audioFile)
-    const response = await fetch(AUDIO_API_URL, { method: 'POST', body: formData })
-    if (!response.ok) {
-      const errData = await response.json().catch(() => ({}))
-      throw new Error(errData.error || `Audio server error: ${response.status}`)
-    }
-    const data = await response.json()
-    setAudioProgress(`Transcribed! (${data.language || '?'}, ${data.duration || 0}s)`)
-    return (data.transcript || '').trim()
-  }
-
-  // ======================================================
-  // LIVE MICROPHONE RECORDING
-  // ======================================================
-  const resetLive = () => {
-    setLiveTranscript('')
-    setLiveRisk(null)
-    setRecordingTime(0)
-    transcriptRef.current = ''
-    chunkCountRef.current = 0
-    analysisQueueRef.current = false
-  }
-
-  const startRecording = useCallback(async () => {
-    try {
-      resetLive()
-      setError(null)
-
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      streamRef.current = stream
-
-      setIsRecording(true)
-
-      // Timer
-      timerRef.current = setInterval(() => {
-        setRecordingTime(prev => prev + 1)
-      }, 1000)
-
-      // Use stop/restart cycle so each chunk is a complete WebM file with headers
-      const recordChunk = () => {
-        if (!streamRef.current) return
-
-        const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' })
-        mediaRecorderRef.current = recorder
-        const chunks = []
-
-        recorder.ondataavailable = (event) => {
-          if (event.data.size > 0) chunks.push(event.data)
-        }
-
-        recorder.onstop = async () => {
-          if (chunks.length === 0) return
-          const blob = new Blob(chunks, { type: 'audio/webm' })
-          if (blob.size < 500) return
-
-          chunkCountRef.current += 1
-          const chunkNum = chunkCountRef.current
-
-          try {
-            const formData = new FormData()
-            formData.append('audio', blob, `chunk_${chunkNum}.webm`)
-            const response = await fetch(AUDIO_CHUNK_API_URL, { method: 'POST', body: formData })
-
-            if (response.ok) {
-              const data = await response.json()
-              const chunkText = (data.transcript || '').trim()
-
-              if (chunkText && chunkText.length > 1) {
-                transcriptRef.current += ' ' + chunkText
-                setLiveTranscript(transcriptRef.current.trim())
-
-                // Run Groq analysis every 3 chunks (~9 seconds)
-                if (chunkCountRef.current % 3 === 0 && !analysisQueueRef.current) {
-                  runLiveAnalysis()
-                }
-              }
-            }
-          } catch (err) {
-            console.error('Chunk transcription error:', err)
-          }
-
-          // Start next chunk if still recording
-          if (streamRef.current && streamRef.current.active) {
-            recordChunk()
-          }
-        }
-
-        recorder.start()
-        // Stop after 3 seconds to get a complete WebM file
-        setTimeout(() => {
-          if (recorder.state === 'recording') {
-            recorder.stop()
-          }
-        }, 3000)
-      }
-
-      recordChunk()
-
-    } catch (err) {
-      if (err.name === 'NotAllowedError') {
-        setError('Microphone access denied. Please allow microphone permission and try again.')
-      } else {
-        setError('Failed to access microphone: ' + err.message)
-      }
-    }
-  }, [])
-
-  const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop()
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop())
-      streamRef.current = null
-    }
-    if (timerRef.current) {
-      clearInterval(timerRef.current)
-      timerRef.current = null
-    }
-    setIsRecording(false)
-  }, [])
-
-  const runLiveAnalysis = async () => {
-    const apiKey = import.meta.env.VITE_GROQ_API_KEY
-    if (!apiKey || analysisQueueRef.current) return
-
-    const currentTranscript = transcriptRef.current.trim()
-    if (currentTranscript.length < 5) return
-
-    analysisQueueRef.current = true
-    try {
-      const userMessage = `The following is a LIVE transcript from an ongoing audio recording. Analyze the current transcript for scam content:\n\n---\n${currentTranscript}\n---`
-      const result = await callGroqAPI(apiKey, AUDIO_SYSTEM_PROMPT, userMessage)
-      const cleanedText = result.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
-      const parsed = JSON.parse(cleanedText)
-      setLiveRisk({
-        riskScore: parsed.riskScore,
-        statusCode: parsed.statusCode,
-        status: parsed.status,
-        scamCategory: parsed.scamCategory,
-        shortExplanation: parsed.shortExplanation
-      })
-    } catch (err) {
-      console.error('Live analysis error:', err)
-    } finally {
-      analysisQueueRef.current = false
-    }
-  }
-
-  const finalizeLiveRecording = async () => {
-    stopRecording()
-
-    const finalTranscript = transcriptRef.current.trim()
-    if (!finalTranscript || finalTranscript.length < 3) {
-      processResult(JSON.stringify(SAFE_FALLBACK('audio')), 0)
-      return
-    }
-
-    const apiKey = import.meta.env.VITE_GROQ_API_KEY
-    if (!apiKey) {
-      setError('Groq API key not found.')
-      return
-    }
-
-    setIsAnalyzing(true)
-    setAudioProgress('Running final analysis on full transcript...')
-    try {
-      const userMessage = `The following text was transcribed from a live audio recording. Analyze the complete transcript for scam content:\n\n---\n${finalTranscript}\n---`
-      const result = await callGroqAPI(apiKey, AUDIO_SYSTEM_PROMPT, userMessage)
-      processResult(result, finalTranscript.length)
-    } catch (err) {
-      setError(err.message || 'Failed to analyze.')
-    } finally {
-      setIsAnalyzing(false)
-      setAudioProgress('')
-    }
-  }
-
-  // ---- Main analyze handler ----
+  // ---- Main analyze handler (for text, url, image, and uploaded audio files) ----
   const handleAnalyze = async () => {
     const validationError = validateInput()
     if (validationError) {
@@ -580,10 +509,12 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
       if (mode === 'text') {
         const result = await callGroqAPI(apiKey, TEXT_SYSTEM_PROMPT, message)
         processResult(result, message.length)
+
       } else if (mode === 'url') {
         const urlInput = message.trim()
         const result = await callGroqAPI(apiKey, URL_SYSTEM_PROMPT, `Analyze this URL for phishing:\n\n${urlInput}`)
         processResult(result, urlInput.length)
+
       } else if (mode === 'image') {
         const extractedText = await extractTextFromImage(imagePreview)
         if (!extractedText || extractedText.length < 3) {
@@ -593,13 +524,24 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
         setOcrProgress('Sending extracted text to AI...')
         const result = await callGroqAPI(apiKey, IMAGE_SYSTEM_PROMPT, `OCR text from image:\n\n---\n${extractedText}\n---`)
         processResult(result, extractedText.length)
-      } else if (mode === 'audio' && audioSubMode === 'upload') {
-        const transcript = await transcribeAudio()
+
+      } else if (mode === 'audio') {
+        // Uploaded audio file
+        setAudioProgress('Uploading audio to Whisper server...')
+        const formData = new FormData()
+        formData.append('audio', audioFile)
+        const response = await fetch(AUDIO_API_URL, { method: 'POST', body: formData })
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}))
+          throw new Error(errData.error || `Audio server error: ${response.status}`)
+        }
+        const data = await response.json()
+        const transcript = (data.transcript || '').trim()
         if (!transcript || transcript.length < 3) {
           processResult(JSON.stringify(SAFE_FALLBACK('audio')), 0)
           return
         }
-        setAudioProgress('Sending transcript to AI...')
+        setAudioProgress(`Transcribed (${data.language || '?'}, ${data.duration || 0}s). Analyzing...`)
         const result = await callGroqAPI(apiKey, AUDIO_SYSTEM_PROMPT, `Audio transcript:\n\n---\n${transcript}\n---`)
         processResult(result, transcript.length)
       }
@@ -618,8 +560,8 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
     setError(null)
     removeImage()
     removeAudio()
-    resetLive()
     setDetectedType(null)
+    setRecordingTime(0)
     if (onReset) onReset()
   }
 
@@ -641,7 +583,7 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
 
   const canAnalyze =
     mode === 'image' ? imageFile :
-    mode === 'audio' ? (audioSubMode === 'upload' ? audioFile : false) :
+    mode === 'audio' ? audioFile :
     message.trim()
 
   const getModeLabel = () => {
@@ -661,6 +603,7 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
   return (
     <div className="message-scanner" id="scanner">
       <div className="scanner-header">
+        <div className="scanner-icon">🤖</div>
         <div>
           <h3>AI-Powered Message Scanner</h3>
           <p>Powered by Groq AI — text, URL, image & audio scam detection</p>
@@ -697,6 +640,7 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
           )}
 
           {/* ---- INPUT AREAS ---- */}
+
           {mode === 'image' ? (
             <div className="scanner-image-upload">
               {!imagePreview ? (
@@ -720,107 +664,55 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
 
           ) : mode === 'audio' ? (
             <div className="scanner-audio-section">
-              {/* Audio sub-mode toggle */}
-              <div className="audio-sub-toggle">
-                <button
-                  className={`audio-sub-btn ${audioSubMode === 'upload' ? 'active' : ''}`}
-                  onClick={() => { if (!isRecording) { setAudioSubMode('upload'); resetLive() } }}
-                  disabled={isRecording || isAnalyzing}
-                >
-                  📁 Upload File
-                </button>
-                <button
-                  className={`audio-sub-btn ${audioSubMode === 'live' ? 'active' : ''}`}
-                  onClick={() => { if (!isAnalyzing) { setAudioSubMode('live'); removeAudio() } }}
-                  disabled={isAnalyzing}
-                >
-                  🔴 Live Mic
-                </button>
-              </div>
-
-              {audioSubMode === 'upload' ? (
-                /* Audio File Upload */
-                <div className="scanner-audio-upload">
-                  {!audioFile ? (
-                    <div className="audio-dropzone" onClick={() => audioInputRef.current?.click()}
-                      onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('dragover') }}
-                      onDragLeave={(e) => e.currentTarget.classList.remove('dragover')}
-                      onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove('dragover'); const f = e.dataTransfer.files?.[0]; if (f) handleAudioSelect({ target: { files: [f] } }) }}>
-                      <div className="dropzone-icon">🎙️</div>
-                      <p className="dropzone-title">Upload Suspicious Audio</p>
-                      <p className="dropzone-subtitle">Click to browse or drag & drop</p>
-                      <p className="dropzone-hint">MP3, WAV, M4A, OGG • Max 25MB</p>
-                    </div>
-                  ) : (
-                    <div className="audio-preview-wrapper">
-                      <div className="audio-file-info">
-                        <span className="audio-file-icon">🎵</span>
-                        <div className="audio-file-details">
-                          <span className="audio-file-name">{audioFile.name}</span>
-                          <span className="audio-file-size">{(audioFile.size / (1024 * 1024)).toFixed(1)} MB</span>
-                        </div>
-                        <button className="audio-remove-btn" onClick={removeAudio} disabled={isAnalyzing}>✕</button>
-                      </div>
-                      {audioPreview && <audio controls src={audioPreview} className="audio-player" />}
-                    </div>
-                  )}
-                  <input ref={audioInputRef} type="file" accept=".mp3,.wav,.m4a,.ogg,.flac,.webm" onChange={handleAudioSelect} style={{ display: 'none' }} />
-                </div>
-
-              ) : (
-                /* Live Mic Recording */
-                <div className="live-mic-section">
-                  <div className="live-mic-controls">
-                    {!isRecording ? (
-                      <button className="mic-start-btn" onClick={startRecording} disabled={isAnalyzing}>
-                        <span className="mic-icon">🎙️</span>
-                        Start Recording
-                      </button>
-                    ) : (
-                      <div className="mic-active-controls">
-                        <div className="mic-recording-indicator">
-                          <span className="recording-dot"></span>
-                          <span className="recording-time">{formatTime(recordingTime)}</span>
-                          <span className="recording-label">Recording...</span>
-                        </div>
-                        <div className="mic-action-btns">
-                          <button className="mic-stop-btn" onClick={finalizeLiveRecording}>
-                            ⏹️ Stop & Analyze
-                          </button>
-                          <button className="mic-cancel-btn" onClick={() => { stopRecording(); resetLive() }}>
-                            ✕ Cancel
-                          </button>
-                        </div>
-                      </div>
-                    )}
+              {/* Recording section */}
+              {!audioFile && !isRecording && (
+                <div className="audio-input-options">
+                  <button className="mic-start-btn" onClick={startRecording} disabled={isAnalyzing}>
+                    <span className="mic-icon">🎙️</span>
+                    Start Recording
+                  </button>
+                  <div className="audio-divider"><span>or</span></div>
+                  <div className="audio-dropzone" onClick={() => audioInputRef.current?.click()}
+                    onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('dragover') }}
+                    onDragLeave={(e) => e.currentTarget.classList.remove('dragover')}
+                    onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove('dragover'); const f = e.dataTransfer.files?.[0]; if (f) handleAudioSelect({ target: { files: [f] } }) }}>
+                    <div className="dropzone-icon">📁</div>
+                    <p className="dropzone-title">Upload Audio File</p>
+                    <p className="dropzone-hint">MP3, WAV, M4A, OGG • Max 25MB</p>
                   </div>
-
-                  {/* Live Transcript */}
-                  {(liveTranscript || isRecording) && (
-                    <div className="live-transcript-box">
-                      <div className="live-transcript-header">
-                        <span>📝 Live Transcript</span>
-                        {isRecording && <span className="live-pulse">●</span>}
-                      </div>
-                      <div className="live-transcript-text">
-                        {liveTranscript || (isRecording ? 'Listening...' : '')}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Live Risk Indicator */}
-                  {liveRisk && (
-                    <div className={`live-risk-bar risk-${liveRisk.statusCode}`}>
-                      <div className="live-risk-left">
-                        <span className="live-risk-emoji">{getStatusEmoji(liveRisk.statusCode)}</span>
-                        <span className="live-risk-score">{liveRisk.riskScore}/100</span>
-                        <span className="live-risk-status">{liveRisk.status}</span>
-                      </div>
-                      <span className="live-risk-category">{liveRisk.scamCategory}</span>
-                    </div>
-                  )}
                 </div>
               )}
+
+              {/* Active recording */}
+              {isRecording && (
+                <div className="mic-recording-active">
+                  <div className="mic-recording-indicator">
+                    <span className="recording-dot"></span>
+                    <span className="recording-time">{formatTime(recordingTime)}</span>
+                    <span className="recording-label">Recording...</span>
+                  </div>
+                  <button className="mic-stop-btn" onClick={stopRecording}>
+                    ⏹️ Stop Recording
+                  </button>
+                </div>
+              )}
+
+              {/* Audio preview (after recording or upload) */}
+              {audioFile && !isRecording && (
+                <div className="audio-preview-wrapper">
+                  <div className="audio-file-info">
+                    <span className="audio-file-icon">🎵</span>
+                    <div className="audio-file-details">
+                      <span className="audio-file-name">{audioFile.name}</span>
+                      <span className="audio-file-size">{(audioFile.size / (1024 * 1024)).toFixed(1)} MB</span>
+                    </div>
+                    <button className="audio-remove-btn" onClick={removeAudio} disabled={isAnalyzing}>✕</button>
+                  </div>
+                  {audioPreview && <audio controls src={audioPreview} className="audio-player" />}
+                </div>
+              )}
+
+              <input ref={audioInputRef} type="file" accept=".mp3,.wav,.m4a,.ogg,.flac,.webm" onChange={handleAudioSelect} style={{ display: 'none' }} />
             </div>
 
           ) : (
@@ -837,8 +729,8 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
             />
           )}
 
-          {/* Footer — hide during live recording */}
-          {!(mode === 'audio' && audioSubMode === 'live') && (
+          {/* Footer — hide during recording */}
+          {!isRecording && (
             <div className="input-footer">
               <span className="char-count">
                 {mode === 'image'
@@ -882,7 +774,7 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
                 {mode === 'audio' && (
                   <>
                     <div className={`scanner-step ${audioProgress ? 'active' : ''}`}><span className="step-dot"></span> {audioProgress || 'Preparing audio...'}</div>
-                    <div className={`scanner-step ${audioProgress.includes('Sending') ? 'active' : ''}`}><span className="step-dot"></span> Analyzing transcript...</div>
+                    <div className={`scanner-step ${audioProgress.includes('Analyzing') ? 'active' : ''}`}><span className="step-dot"></span> Detecting scam patterns in transcript...</div>
                     <div className="scanner-step"><span className="step-dot"></span> Calculating risk score...</div>
                   </>
                 )}
