@@ -6,8 +6,14 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      // Flask audio server (must be listed BEFORE the generic /api rule)
+      '/api/transcribe': {
+        target: "https://neuroshield-1-6ei3.onrender.com",
+        changeOrigin: true
+      },
+      // Node.js backend
       '/api': {
-        target: 'http://localhost:5000',
+        target: "https://neuroshield-5yad.onrender.com",
         changeOrigin: true
       }
     }
