@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: neuroshield-audio
+    runtime: python
+    rootDir: server
+    buildCommand: "apt-get install -y ffmpeg && pip install -r requirements.txt"
+    startCommand: "python audio_server.py"
+    envVars:
+      - key: PORT
+        value: "10000"
