@@ -384,7 +384,9 @@ export default function MessageScanner({ onResult, existingResult, onReset }) {
       const formData = new FormData()
       formData.append('audio', file)
       const response = await fetch(AUDIO_API_URL, { method: 'POST', body: formData })
-
+      console.log(file);
+      console.log(formData);
+      console.log(AUDIO_API_URL);
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}))
         throw new Error(errData.error || `Audio server error: ${response.status}`)
