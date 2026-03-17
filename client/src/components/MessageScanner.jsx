@@ -125,7 +125,7 @@ ${BASE_RULES}
 // Helpers
 // ============================================
 const GROQ_TEXT_MODEL = 'llama-3.1-8b-instant'
-const AUDIO_API_URL = '${import.meta.env.VITE_AUDIO_API_URL}/api/transcribe'
+const AUDIO_API_URL = `${import.meta.env.VITE_AUDIO_API_URL}/api/transcribe`
 
 const URL_REGEX = /^(https?:\/\/)?([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(\/[^\s]*)?$/
 
