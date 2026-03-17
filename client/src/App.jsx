@@ -28,7 +28,7 @@ function App() {
 
     try {
       const [response] = await Promise.all([
-        fetch('/api/analyze', {
+        fetch('${import.meta.env.VITE_API_URL}/api/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message })
