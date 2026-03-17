@@ -282,6 +282,7 @@ a:hover {
 }
 
 @keyframes pulse {
+
   0%,
   100% {
     opacity: 1;
@@ -549,6 +550,7 @@ a:hover {
 }
 
 @keyframes corePulse {
+
   0%,
   100% {
     transform: scale(1);
@@ -1399,4 +1401,42 @@ a:hover {
   .analysis-input-wrapper {
     padding: 20px;
   }
+}
+
+/* ============================================
+   Deepfake Monitor Page
+   ============================================ */
+
+/* CSS variable alias used by monitor components */
+:root {
+  --card-bg: var(--bg-card);
+}
+
+.monitor-page {
+  min-height: 100vh;
+  background: var(--bg-primary);
+}
+
+/* Responsive monitor grid: stack on mobile */
+@media (max-width: 900px) {
+  .monitor-page .container>div[style*="grid"] {
+    display: flex !important;
+    flex-direction: column !important;
+  }
+}
+
+/* Navbar Link styles for React Router Link components */
+.navbar-links a,
+.navbar-links>li>a {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  transition: var(--transition-fast);
+  position: relative;
+  text-decoration: none;
+}
+
+.navbar-links>li>a:hover {
+  color: var(--text-primary);
 }

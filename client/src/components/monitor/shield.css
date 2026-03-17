@@ -1,0 +1,22 @@
+.shield-overlay-ring {
+  animation: shieldPulseIdle 2.5s ease-in-out infinite;
+}
+.shield-overlay-ring.scanning {
+  animation: shieldPulseScan 1s ease-in-out infinite;
+}
+.shield-overlay-ring.alert {
+  animation: shieldFlare 0.3s ease-in-out infinite alternate;
+}
+
+@keyframes shieldPulseIdle {
+  0%, 100% { opacity: 0.55; stroke-width: 3; }
+  50%       { opacity: 1;    stroke-width: 5; }
+}
+@keyframes shieldPulseScan {
+  0%, 100% { opacity: 0.7; stroke-width: 4; }
+  50%       { opacity: 1;   stroke-width: 7; }
+}
+@keyframes shieldFlare {
+  0%   { opacity: 1;   stroke-width: 8;  filter: drop-shadow(0 0 16px #ef4444); }
+  100% { opacity: 0.6; stroke-width: 12; filter: drop-shadow(0 0 32px #ef4444); }
+}

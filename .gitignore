@@ -1,0 +1,38 @@
+# Node.js
+node_modules/
+dist/
+build/
+.env
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.pytest_cache/
+deepfake-monitor/models/mesonet4.pth
+deepfake-monitor/models/voice_detector.onnx
+deepfake-monitor/models/vosk-model-small-en-us-0.15/
+
+# OS/IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
