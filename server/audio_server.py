@@ -7,20 +7,12 @@ import traceback
 import subprocess
 import shutil
 
-import glob
 
 app = Flask(__name__)
 CORS(app)
 
-# ── Add FFmpeg to PATH (WinGet install location) ──
-ffmpeg_pattern = os.path.join(
-    os.environ.get('LOCALAPPDATA', ''),
-    'Microsoft', 'WinGet', 'Packages', '*ffmpeg*', '*', 'bin'
-)
-ffmpeg_dirs = glob.glob(ffmpeg_pattern)
-if ffmpeg_dirs:
-    os.environ['PATH'] = ffmpeg_dirs[0] + os.pathsep + os.environ.get('PATH', '')
-    print(f"✅ FFmpeg path added: {ffmpeg_dirs[0]}")
+# ── FFmpeg is available system-wide on Linux (Render) via apt ──
+# On Windows locally, install FFmpeg and ensure it's on your PATH.
 
 # ── Load Whisper model ──
 print("⏳ Loading Whisper model (base)...")
@@ -182,5 +174,6 @@ def transcribe_chunk():
 
 
 if __name__ == '__main__':
-    print("🎙️  NeuroShield Audio API running on http://localhost:5001")
-    app.run(host='0.0.0.0', port=5001, debug=False)
+    port = int(os.environ.get('PORT', 5001))
+    print(f"🎙️  NeuroShield Audio API running on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)
